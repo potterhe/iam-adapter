@@ -1,6 +1,7 @@
 server:
   listen: ":3000"
   proxyHeader: xforwarded
+  stateStorage: memory
 
 oidc:
   issuer: ""

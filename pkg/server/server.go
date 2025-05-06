@@ -4,16 +4,19 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
+	"github.com/google/uuid"
 	"github.com/spf13/viper"
 	"golang.org/x/oauth2"
 )
 
 type server struct {
 	oauth2Config *oauth2.Config
+	provider     *oidc.Provider
 	verifier     *oidc.IDTokenVerifier
-	token        *oauth2.Token
+	stateStorage stateStorage
 }
 
 func NewServer() *server {
@@ -24,10 +27,11 @@ func NewServer() *server {
 		// handle error
 	}
 
+	clientID := viper.GetString("oidc.client_id")
+
 	oauth2Config := oauth2.Config{
-		ClientID:     viper.GetString("oidc.client_id"),
+		ClientID:     clientID,
 		ClientSecret: viper.GetString("oidc.client_secret"),
-		//RedirectURL:  "http://localhost:8000/callback/oidc",
 
 		// Discovery returns the OAuth2 endpoints.
 		Endpoint: provider.Endpoint(),
@@ -36,11 +40,16 @@ func NewServer() *server {
 		Scopes: []string{oidc.ScopeOpenID, "profile", "email"},
 	}
 
-	var verifier = provider.Verifier(&oidc.Config{ClientID: "iam-adapter"})
+	var verifier = provider.Verifier(&oidc.Config{ClientID: clientID})
+
+	// @todo config server.stateStorage
+	stateStorage := newMemoryStateStorage()
 
 	return &server{
+		provider:     provider,
 		oauth2Config: &oauth2Config,
 		verifier:     verifier,
+		stateStorage: stateStorage,
 	}
 }
 
@@ -48,9 +57,9 @@ func NewServer() *server {
 func (s *server) Serve() {
 
 	// 设置/login/oidc路径的处理函数为s.loginHandler
-	http.HandleFunc("/login/oidc", s.loginHandler)
+	http.HandleFunc("/oidc/login", s.loginHandler)
 	// 设置/callback/oidc路径的处理函数为s.callbackHandler
-	http.HandleFunc("/callback/oidc", s.callbackHandler)
+	http.HandleFunc("/oidc/callback", s.callbackHandler)
 	// 设置/路径的处理函数为s.rootHandler
 
 	// 监听3000端口，启动服务器
@@ -60,30 +69,54 @@ func (s *server) Serve() {
 func (s *server) loginHandler(w http.ResponseWriter, r *http.Request) {
 	// @todo if logined redirect to home
 	//fmt.Println(r.Header)
+	origRedirectURL := r.URL.Query().Get("redirect_url")
+	if origRedirectURL == "" {
+		origRedirectURL = "/"
+	}
 
-	state := "random"
+	// @todo generate random state
+	state := &state{
+		UUID:        uuid.NewString(),
+		ctime:       time.Now(),
+		redirectURL: origRedirectURL,
+	}
+	s.stateStorage.Put(state)
 
-	redirectURL := "http://localhost:3000/callback/oidc"
+	// @todo redirect_url and validate url host must be same as X-Forwarded-Host
+
+	redirectURL := ""
 	if viper.GetString("server.proxyHeader") == "xforwarded" {
 		xhost := r.Header.Get("X-Forwarded-Host")
 		xproto := r.Header.Get("X-Forwarded-Proto")
 		xport := r.Header.Get("X-Forwarded-Port")
-		redirectURL = fmt.Sprintf("%s://%s:%s/%s", xproto, xhost, xport, "callback/oidc")
+		redirectURL = fmt.Sprintf("%s://%s:%s/%s", xproto, xhost, xport, "oidc/callback")
+		s.oauth2Config.RedirectURL = redirectURL
 	}
 
-	http.Redirect(w, r, s.oauth2Config.AuthCodeURL(state, oauth2.SetAuthURLParam("redirect_uri", redirectURL)), http.StatusFound)
+	http.Redirect(w, r, s.oauth2Config.AuthCodeURL(state.UUID), http.StatusFound)
 }
 
 func (s *server) callbackHandler(w http.ResponseWriter, r *http.Request) {
 	// Verify state and errors.
+	stateID := r.URL.Query().Get("state")
+	state := s.stateStorage.Get(stateID)
+	if state == nil {
+		// handle invalid state
+		fmt.Println("invalid state")
+		return
+	}
+	s.stateStorage.Delete(state.UUID)
 
-	oauth2Token, err := s.oauth2Config.Exchange(r.Context(), r.URL.Query().Get("code"))
+	code := r.URL.Query().Get("code")
+	fmt.Println(code)
+
+	oauth2Token, err := s.oauth2Config.Exchange(r.Context(), code)
 	if err != nil {
+		fmt.Println(err)
 		// handle error
 	}
 
 	fmt.Println(oauth2Token)
-	s.token = oauth2Token
 
 	// Extract the ID Token from OAuth2 token.
 	rawIDToken, ok := oauth2Token.Extra("id_token").(string)
@@ -120,32 +153,6 @@ func (s *server) callbackHandler(w http.ResponseWriter, r *http.Request) {
 		Path:     "/",
 	}
 	http.SetCookie(w, cookie)
-	http.Redirect(w, r, "/a/", http.StatusTemporaryRedirect)
-
-}
-
-func (s *server) rootHandler(w http.ResponseWriter, r *http.Request) {
-	fmt.Println(r)
-}
-
-func (s *server) tokenHandler(w http.ResponseWriter, r *http.Request) {
-
-	token2, err := s.oauth2Config.TokenSource(r.Context(), s.token).Token()
-	if err != nil {
-		// handle error
-	}
-	fmt.Println(token2)
-	s.token = token2
-
-	cookie, err := r.Cookie("Authorization")
-	if err != nil {
-		if err == http.ErrNoCookie {
-			fmt.Println("Cookie not found")
-		} else {
-			fmt.Println("Error reading cookie:", err)
-		}
-		return
-	}
-
-	fmt.Println(cookie.Value)
+	origRedirectURL := state.redirectURL
+	http.Redirect(w, r, origRedirectURL, http.StatusTemporaryRedirect)
 }
