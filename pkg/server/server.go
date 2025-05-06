@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -102,21 +103,20 @@ func (s *server) callbackHandler(w http.ResponseWriter, r *http.Request) {
 	state := s.stateStorage.Get(stateID)
 	if state == nil {
 		// handle invalid state
-		fmt.Println("invalid state")
+		slog.Error("invalid state")
 		return
 	}
 	s.stateStorage.Delete(state.UUID)
 
 	code := r.URL.Query().Get("code")
-	fmt.Println(code)
+	slog.Info("code-msg", "code", code)
 
 	oauth2Token, err := s.oauth2Config.Exchange(r.Context(), code)
 	if err != nil {
-		fmt.Println(err)
-		// handle error
+		slog.Error("exchange error:", err)
+		return
 	}
-
-	fmt.Println(oauth2Token)
+	slog.Info("oauth2Token-msg", "oauth2Token", oauth2Token)
 
 	// Extract the ID Token from OAuth2 token.
 	rawIDToken, ok := oauth2Token.Extra("id_token").(string)
@@ -143,7 +143,6 @@ func (s *server) callbackHandler(w http.ResponseWriter, r *http.Request) {
 
 	// 放置cookie
 	access_token := oauth2Token.AccessToken
-	fmt.Println(access_token)
 	cookie := &http.Cookie{
 		Name:     "Authorization",
 		Value:    access_token,
