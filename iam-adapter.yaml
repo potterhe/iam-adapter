@@ -1,0 +1,9 @@
+server:
+  listen: ":3000"
+  proxyHeader: xforwarded
+  stateStorage: memory
+
+oidc:
+  issuer: ""
+  client_id: iam-adapter
+  client_secret: ""
