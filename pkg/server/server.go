@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -21,6 +22,19 @@ type server struct {
 }
 
 func NewServer() *server {
+
+	logLevel := viper.GetString("server.logLevel")
+	if logLevel != "" {
+		slogLevel := slog.Level(0)
+		slogLevel.UnmarshalText([]byte(logLevel))
+		slog.SetLogLoggerLevel(slogLevel)
+		slog.Info("server log level", "level", logLevel)
+	}
+
+	slog.Debug("debug-msg")
+	slog.Info("info-msg")
+	slog.Warn("warn-msg")
+	slog.Error("error-msg")
 
 	ctx := context.TODO()
 	provider, err := oidc.NewProvider(ctx, viper.GetString("oidc.issuer"))
@@ -73,6 +87,24 @@ func (s *server) loginHandler(w http.ResponseWriter, r *http.Request) {
 	origRedirectURL := r.URL.Query().Get("redirect_url")
 	if origRedirectURL == "" {
 		origRedirectURL = "/"
+	} else {
+		rurl, err := url.Parse(origRedirectURL)
+		if err != nil {
+			slog.Error("invalid redirect url", "err", err)
+			return
+		}
+
+		if rurl.Host != "" {
+			chost := r.Host
+			if viper.GetString("server.proxyHeader") == "xforwarded" {
+				chost = r.Header.Get("X-Forwarded-Host")
+			}
+
+			if chost != rurl.Host {
+				slog.Error("invalid redirect url host", "err", err, "cHost", chost, "rurl.Host", rurl.Host)
+				return
+			}
+		}
 	}
 
 	// @todo generate random state
@@ -116,7 +148,7 @@ func (s *server) callbackHandler(w http.ResponseWriter, r *http.Request) {
 		slog.Error("exchange error:", err)
 		return
 	}
-	slog.Info("oauth2Token-msg", "oauth2Token", oauth2Token)
+	slog.Debug("oauth2Token-msg", "oauth2Token", oauth2Token)
 
 	// Extract the ID Token from OAuth2 token.
 	rawIDToken, ok := oauth2Token.Extra("id_token").(string)
