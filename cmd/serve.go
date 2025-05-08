@@ -23,7 +23,10 @@ to quickly create a Cobra application.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		fmt.Println("serve called")
 
-		s := server.NewServer()
+		s, err := server.NewServer()
+		if err != nil {
+			panic(err)
+		}
 		s.Serve()
 	},
 }
