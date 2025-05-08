@@ -21,7 +21,7 @@ type server struct {
 	stateStorage stateStorage
 }
 
-func NewServer() *server {
+func NewServer() (*server, error) {
 
 	logLevel := viper.GetString("server.logLevel")
 	if logLevel != "" {
@@ -39,7 +39,8 @@ func NewServer() *server {
 	ctx := context.TODO()
 	provider, err := oidc.NewProvider(ctx, viper.GetString("oidc.issuer"))
 	if err != nil {
-		// handle error
+		slog.Error("failed to get provider", "err", err)
+		return nil, err
 	}
 
 	clientID := viper.GetString("oidc.client_id")
@@ -60,12 +61,13 @@ func NewServer() *server {
 	// @todo config server.stateStorage
 	stateStorage := newMemoryStateStorage()
 
-	return &server{
+	s := &server{
 		provider:     provider,
 		oauth2Config: &oauth2Config,
 		verifier:     verifier,
 		stateStorage: stateStorage,
 	}
+	return s, nil
 }
 
 // Serve函数用于启动服务器
@@ -122,7 +124,11 @@ func (s *server) loginHandler(w http.ResponseWriter, r *http.Request) {
 		xhost := r.Header.Get("X-Forwarded-Host")
 		xproto := r.Header.Get("X-Forwarded-Proto")
 		xport := r.Header.Get("X-Forwarded-Port")
-		redirectURL = fmt.Sprintf("%s://%s:%s/%s", xproto, xhost, xport, "oidc/callback")
+		if xproto == "https" && xport == "443" || xproto == "http" && xport == "80" {
+			redirectURL = fmt.Sprintf("%s://%s/%s", xproto, xhost, "oidc/callback")
+		} else {
+			redirectURL = fmt.Sprintf("%s://%s:%s/%s", xproto, xhost, xport, "oidc/callback")
+		}
 		s.oauth2Config.RedirectURL = redirectURL
 	}
 
